@@ -32,8 +32,14 @@ def check_gemini(cfg) -> bool:
         return False
     print(DOT, "키:", _mask(key))
     print(DOT, "모델:", cfg.model)
+    if cfg.fallbacks:
+        print(DOT, "대체 모델:", ", ".join(cfg.fallbacks))
 
-    llm = Gemini(key, cfg.model, api_style=cfg.api_style, data_dir=cfg.data_dir, retries=0)
+    def on_switch(old, new, why):
+        print(DOT, "'{}' 이 응답하지 않아 '{}' 로 바꿔서 시도합니다.".format(old, new))
+
+    llm = Gemini(key, cfg.model, api_style=cfg.api_style, data_dir=cfg.data_dir,
+                 retries=0, fallbacks=cfg.fallbacks, on_switch=on_switch)
 
     # 어떤 모델을 쓸 수 있는지 먼저 보여준다 (모델명이 틀렸을 때 바로 알 수 있게)
     try:
@@ -41,9 +47,13 @@ def check_gemini(cfg) -> bool:
         free_flash = [m["name"] for m in models if "flash" in m["name"].lower()][:8]
         if free_flash:
             print(DOT, "쓸 수 있는 flash 계열:", ", ".join(free_flash))
-        if not any(m["name"] == cfg.model for m in models):
+        names = {m["name"] for m in models}
+        if cfg.model not in names:
             print(NG, "config.json 의 모델 '{}' 이 목록에 없습니다.".format(cfg.model))
             print(DOT, "위 목록 중 하나로 config.json 의 model.id 를 바꾸세요.")
+        missing = [m for m in cfg.fallbacks if m not in names]
+        if missing:
+            print(DOT, "대체 모델 중 목록에 없는 것: {} (지워도 됩니다)".format(", ".join(missing)))
     except Exception as e:
         print(DOT, "모델 목록 조회는 건너뜁니다 ({})".format(type(e).__name__))
 
@@ -51,7 +61,7 @@ def check_gemini(cfg) -> bool:
         reply = llm.chat("너는 점검용이다. 아주 짧게 답한다.",
                          [{"role": "user", "text": "연결 확인. '정상'이라고만 답해."}], [])
         print(OK, "응답 정상: {}".format((reply.text or "").strip()[:40]))
-        print(DOT, "사용된 방식: {}".format(llm.style or "?"))
+        print(DOT, "사용된 모델: {} / 방식: {}".format(llm.model, llm.style or "?"))
     except LLMError as e:
         print(NG, str(e))
         return False
@@ -97,8 +107,11 @@ def check_mail(cfg) -> bool:
 
     mail_cfg = cfg.mail or {}
     hosts = []
-    for h in (os.environ.get("IMAP_HOST"), mail_cfg.get("imap_host"),
-              "imap.hiworks.com", "outlook.office365.com", "imap.gmail.com"):
+    candidates = [os.environ.get("IMAP_HOST"), mail_cfg.get("imap_host")]
+    candidates += list(mail_cfg.get("imap_fallbacks") or [])
+    candidates += ["mail.hiworks.co.kr", "mailapp.hiworks.co.kr",
+                   "outlook.office365.com", "imap.gmail.com"]
+    for h in candidates:
         if h and h not in hosts:
             hosts.append(h)
     port = int(os.environ.get("IMAP_PORT") or mail_cfg.get("imap_port", 993))
@@ -114,22 +127,28 @@ def check_mail(cfg) -> bool:
         try:
             conn.login(user, password)
         except imaplib.IMAP4.error as e:
-            print(NG, "서버는 열렸는데 로그인 실패: {}".format(e))
-            print(DOT, "IMAP 사용이 켜져 있는지, 앱 비밀번호가 필요한지 확인하세요.")
+            reason = str(e)
+            print("       └ 서버는 열렸는데 로그인 실패: {}".format(reason))
+            if "basic authentication is disabled" in reason.lower():
+                print("         (이 서버는 ID/비밀번호 로그인을 막아둔 곳입니다 — 당신 메일 서버가 아닙니다)")
             _close(conn)
-            return False
+            continue  # 다음 후보 서버로
         try:
             conn.select("INBOX", readonly=True)
             status, data = conn.uid("SEARCH", None, "ALL")
             count = len((data[0] or b"").split()) if status == "OK" else 0
             print(OK, "로그인 성공. INBOX {}통".format(count))
-            if host != mail_cfg.get("imap_host"):
+            if host != (os.environ.get("IMAP_HOST") or mail_cfg.get("imap_host")):
                 print(DOT, "→ config.json 의 mail.imap_host 를 '{}' 로 바꾸세요.".format(host))
             return True
         finally:
             _close(conn)
 
-    print(NG, "모든 후보 서버에 붙지 못했습니다. IMAP_HOST 를 .env 에 직접 넣어보세요.")
+    print(NG, "모든 후보 서버에서 실패했습니다.")
+    print(DOT, "도메인({}) 의 메일 서버 주소를 관리자에게 확인해 .env 의 IMAP_HOST 에 넣으세요."
+          .format(user.split("@")[-1] if "@" in user else "회사"))
+    print(DOT, "하이웍스라면 보통 mail.hiworks.co.kr:993 (SSL) 이고, "
+               "관리자 화면에서 IMAP 사용이 켜져 있어야 합니다.")
     return False
 
 

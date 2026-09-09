@@ -27,8 +27,14 @@ _NL = re.compile(r"\n{3,}")
 
 def _settings() -> dict:
     mail_cfg = (context.cfg.mail if context.cfg else {}) or {}
+    primary = env("IMAP_HOST") or mail_cfg.get("imap_host", "mail.hiworks.co.kr")
+    hosts = [primary]
+    for h in (mail_cfg.get("imap_fallbacks") or []):
+        if h and h not in hosts:
+            hosts.append(h)
     return {
-        "host": env("IMAP_HOST") or mail_cfg.get("imap_host", "imap.hiworks.com"),
+        "host": primary,
+        "hosts": hosts,
         "port": int(env("IMAP_PORT") or mail_cfg.get("imap_port", 993)),
         "user": env("IMAP_USER", required=True),
         "password": env("IMAP_PASS", required=True),
@@ -38,9 +44,26 @@ def _settings() -> dict:
 
 
 def _connect(s: dict) -> imaplib.IMAP4_SSL:
-    conn = imaplib.IMAP4_SSL(s["host"], s["port"])
-    conn.login(s["user"], s["password"])
-    return conn
+    """주소가 여러 개면 붙는 곳까지 순서대로 시도한다."""
+    failures = []
+    for host in s.get("hosts") or [s["host"]]:
+        try:
+            conn = imaplib.IMAP4_SSL(host, s["port"], timeout=20)
+        except OSError as e:  # 이름 못 찾음 / 접속 불가 → 다음 후보
+            failures.append("{}: 접속 불가 ({})".format(host, type(e).__name__))
+            continue
+        try:
+            conn.login(s["user"], s["password"])
+        except imaplib.IMAP4.error as e:
+            _close(conn)
+            failures.append("{}: 로그인 실패 ({})".format(host, e))
+            continue
+        return conn
+
+    raise RuntimeError(
+        "메일 서버에 붙지 못했습니다.\n  " + "\n  ".join(failures)
+        + "\n  .env 의 IMAP_HOST / IMAP_USER / IMAP_PASS 를 확인하세요. "
+          "(하이웍스는 보통 mail.hiworks.co.kr:993)")
 
 
 def _close(conn) -> None:

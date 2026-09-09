@@ -51,11 +51,17 @@ def build(cfg):
     for p in problems:
         ui.warn(p)
 
+    def on_switch(old, new, why):
+        ui.warn("모델 '{}' 이 지금 응답하지 않아 '{}' 로 바꿔서 시도합니다.\n  ({})".format(
+            old, new, why.splitlines()[0]))
+
     llm = Gemini(
         env("GEMINI_API_KEY", required=True),
         cfg.model,
         api_style=cfg.api_style,
         data_dir=cfg.data_dir,
+        fallbacks=cfg.fallbacks,
+        on_switch=on_switch,
     )
 
     def on_tool(name, args, result):

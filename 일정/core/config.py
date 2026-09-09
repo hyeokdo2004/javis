@@ -35,7 +35,13 @@ class Config:
         self.raw = raw
         self.tz = timezone(timedelta(hours=raw.get("timezone_offset_hours", 9)))
         model_cfg = raw.get("model") or {}
-        self.model = os.environ.get("GEMINI_MODEL") or model_cfg.get("id", "gemini-3.8-flash")
+        self.model = os.environ.get("GEMINI_MODEL") or model_cfg.get("id", "gemini-2.5-flash")
+        env_fallbacks = os.environ.get("GEMINI_MODEL_FALLBACKS", "")
+        if env_fallbacks:
+            fallbacks = [x.strip() for x in env_fallbacks.split(",") if x.strip()]
+        else:
+            fallbacks = list(model_cfg.get("fallbacks") or [])
+        self.fallbacks = [m for m in fallbacks if m and m != self.model]
         self.api_style = model_cfg.get("api_style", "auto")
         self.mail = raw.get("mail") or {}
         self.root = ROOT

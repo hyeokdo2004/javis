@@ -21,6 +21,15 @@ STYLE_FILE = "api_style.txt"
 class LLMError(RuntimeError):
     """사람이 읽을 수 있는 형태로 정리된 API 오류."""
 
+    def __init__(self, message: str, code: int = 0):
+        super().__init__(message)
+        self.code = code  # HTTP 상태코드 (모르면 0)
+
+    @property
+    def retry_other_model(self) -> bool:
+        """다른 모델로 바꿔서 다시 해볼 만한 오류인가."""
+        return self.code in (404, 429) or 500 <= self.code < 600
+
 
 class ToolCall:
     def __init__(self, name: str, args: dict, call_id: str = ""):
@@ -83,7 +92,9 @@ def _explain(err: urllib.error.HTTPError) -> str:
     if err.code == 404:
         return "모델 이름이나 주소를 찾을 수 없습니다 (404): {}".format(msg)
     if 500 <= err.code < 600:
-        return "구글 쪽 일시 오류 ({}): {}".format(err.code, msg)
+        return ("구글 쪽 일시 오류 ({}) — 그 모델이 지금 몰려서 밀리는 중입니다: {}\n"
+                "잠시 뒤 다시 하거나, config.json 의 model.fallbacks 에 다른 모델을 넣어두면 "
+                "자동으로 바꿔서 시도합니다.").format(err.code, msg)
     return "오류 {}: {}".format(err.code, msg)
 
 
@@ -91,9 +102,11 @@ def _explain(err: urllib.error.HTTPError) -> str:
 
 class Gemini:
     def __init__(self, api_key: str, model: str, *, api_style: str = "auto",
-                 data_dir=None, retries: int = 2):
+                 data_dir=None, retries: int = 2, fallbacks=None, on_switch=None):
         self.api_key = api_key
         self.model = model
+        self.fallbacks = [m for m in (fallbacks or []) if m and m != model]
+        self.on_switch = on_switch  # 모델을 바꿨을 때 알려줄 콜백(선택)
         self.retries = retries
         self.data_dir = data_dir
         self.style = api_style if api_style in ("interactions", "generate") else None
@@ -113,6 +126,28 @@ class Gemini:
           {"role": "assistant", "text": "...", "calls": [ToolCall...]}
           {"role": "tool",      "name": "...", "call_id": "...", "result": "..."}
         """
+        models = [self.model] + list(self.fallbacks)
+        last_error = None
+
+        for index, model in enumerate(models):
+            try:
+                reply = self._chat_with_model(model, system, history, tools)
+            except LLMError as e:
+                last_error = e
+                # 과부하(503)·한도(429)·없는 모델(404) 이면 다음 후보 모델로
+                if e.retry_other_model and index + 1 < len(models):
+                    if self.on_switch:
+                        self.on_switch(model, models[index + 1], str(e))
+                    continue
+                raise
+            if model != self.model:
+                # 이번 세션 동안은 살아 있는 모델을 계속 쓴다
+                self.model = model
+            return reply
+
+        raise last_error or LLMError("어떤 모델로도 응답을 받지 못했습니다.")
+
+    def _chat_with_model(self, model: str, system: str, history: list, tools: list) -> Reply:
         styles = [self.style] if self.style else ["interactions", "generate"]
         last_error = None
 
@@ -120,20 +155,20 @@ class Gemini:
             for attempt in range(self.retries + 1):
                 try:
                     reply = (self._chat_interactions if style == "interactions"
-                             else self._chat_generate)(system, history, tools)
+                             else self._chat_generate)(model, system, history, tools)
                     self._remember_style(style)
                     return reply
                 except urllib.error.HTTPError as e:
                     message = _explain(e)
                     # 형식이 안 맞는 경우엔 다른 방식으로 넘어간다
                     if e.code in (400, 404) and not self.style:
-                        last_error = LLMError(message)
+                        last_error = LLMError(message, e.code)
                         break
                     if e.code == 429 or 500 <= e.code < 600:
                         if attempt < self.retries:
                             time.sleep(2 * (attempt + 1))
                             continue
-                    raise LLMError(message) from e
+                    raise LLMError(message, e.code) from e
                 except urllib.error.URLError as e:
                     if attempt < self.retries:
                         time.sleep(2 * (attempt + 1))
@@ -164,8 +199,8 @@ class Gemini:
             pass
 
     # 신형: /v1beta/interactions
-    def _chat_interactions(self, system: str, history: list, tools: list) -> Reply:
-        payload = {"model": self.model, "input": _to_contents(history)}
+    def _chat_interactions(self, model: str, system: str, history: list, tools: list) -> Reply:
+        payload = {"model": model, "input": _to_contents(history)}
         if system:
             payload["system_instruction"] = {"parts": [{"text": system}]}
         if tools:
@@ -178,7 +213,7 @@ class Gemini:
         return _parse_interactions(data)
 
     # 구형: /v1beta/models/{model}:generateContent
-    def _chat_generate(self, system: str, history: list, tools: list) -> Reply:
+    def _chat_generate(self, model: str, system: str, history: list, tools: list) -> Reply:
         payload = {"contents": _to_contents(history)}
         if system:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
@@ -188,7 +223,7 @@ class Gemini:
                  "parameters": t["parameters"]}
                 for t in tools
             ]}]
-        url = "{}/models/{}:generateContent".format(BASE, self.model)
+        url = "{}/models/{}:generateContent".format(BASE, model)
         data = _post(url, self.api_key, payload)
         return _parse_generate(data)
 

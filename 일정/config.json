@@ -5,14 +5,19 @@
 
   "model": {
     "_id": "Gemini 무료 티어에서 쓸 수 있는 모델. 틀리면 '진단'이 쓸 수 있는 목록을 알려줍니다",
-    "id": "gemini-3.8-flash",
+    "id": "gemini-2.5-flash",
+    "_fallbacks": "위 모델이 과부하(503)/없음(404)일 때 순서대로 대신 써볼 모델들",
+    "fallbacks": ["gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.0-flash"],
     "_api_style": "auto = 되는 방식을 자동으로 찾음. interactions(신형) / generate(구형)로 고정 가능",
     "api_style": "auto"
   },
 
   "mail": {
     "_설명": "메일 기능을 안 쓰면 이 부분은 무시됩니다",
-    "imap_host": "imap.hiworks.com",
+    "_imap_host": "하이웍스는 mail.hiworks.co.kr 입니다 (imap.hiworks.com 은 없는 주소)",
+    "imap_host": "mail.hiworks.co.kr",
+    "_imap_fallbacks": "위 주소가 안 되면 순서대로 시도할 후보들",
+    "imap_fallbacks": ["mailapp.hiworks.co.kr", "imap.hiworks.co.kr"],
     "imap_port": 993,
     "folder": "INBOX",
     "body_limit": 1500

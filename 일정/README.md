@@ -91,6 +91,17 @@ GEMINI_API_KEY=여기에_받은_키
 
 메일 기능을 쓰려면 `IMAP_USER`, `IMAP_PASS` 도 채웁니다. 안 쓸 거면 비워두세요 — 나머지는 그대로 동작합니다.
 
+메일 서버 주소는 `config.json` 의 `mail.imap_host` 에 있습니다. 회사마다 다릅니다.
+
+| 메일 | IMAP 주소 | 포트 |
+|---|---|---|
+| 하이웍스 | `mail.hiworks.co.kr` | 993 (SSL) |
+| Gmail | `imap.gmail.com` | 993 |
+| 네이버 | `imap.naver.com` | 993 |
+| Office365 | `outlook.office365.com` | 993 (기본 인증이 막혀 있으면 안 됩니다) |
+
+주소를 모르면 `IMAP_USER` / `IMAP_PASS` 만 채우고 `python assistant.py 진단` 을 돌리세요 — 후보 서버를 차례로 시도해보고 되는 주소를 알려줍니다.
+
 ### 4. 점검
 
 ```bash
@@ -237,6 +248,8 @@ Gemini 무료 티어 기준 (2026년 9월):
 개인이 쓰기엔 넉넉합니다. 한 대화에 도구를 여러 번 부르면 요청도 여러 번 나가니, 분당 10회는 연달아 빠르게 물어보면 걸릴 수 있습니다. 그럴 땐 잠깐 기다렸다 다시 하면 됩니다 (비서가 자동으로 두 번 재시도합니다).
 
 Pro 모델은 2026년 4월에 무료 티어에서 빠져서 Flash 계열만 씁니다. 모델을 바꾸려면 `config.json` 의 `model.id` 를 고치세요. 어떤 게 되는지는 `python assistant.py 진단` 이 알려줍니다.
+
+`503 (high demand)` 은 그 모델에 사람이 몰렸다는 뜻이지 설정이 틀린 게 아닙니다. `config.json` 의 `model.fallbacks` 에 적어둔 모델로 비서가 알아서 바꿔 시도합니다.
 
 ---
 
