@@ -14,6 +14,7 @@ import urllib.request
 
 from core import context
 from core.registry import tool
+from tools import kr_places
 
 GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -58,6 +59,12 @@ def _timezone() -> str:
 
 
 def _find_place(city: str) -> dict:
+    """국내 지명은 내장 표에서 바로, 나머지는 온라인 검색."""
+    local = kr_places.find(city)
+    if local:
+        lat, lon, label = local
+        return {"latitude": lat, "longitude": lon, "label": label}
+
     data = _get(GEO_URL, {"name": city, "count": 1, "language": "ko", "format": "json"})
     results = data.get("results") or []
     if not results:
@@ -66,6 +73,8 @@ def _find_place(city: str) -> dict:
 
 
 def _place_name(place: dict) -> str:
+    if place.get("label"):
+        return place["label"]
     bits = [place.get("name") or "", place.get("admin1") or "", place.get("country") or ""]
     seen, parts = set(), []
     for b in bits:
@@ -129,8 +138,11 @@ def weather(city: str = "", days: int = 2) -> str:
             "forecast_days": days,
         })
     except LookupError:
-        return ("'{}' 라는 지명을 찾지 못했습니다. 다른 이름으로 다시 불러보세요 "
-                "(예: 서울, 수원, 부산).").format(city)
+        # 같은 도구를 이름만 바꿔 계속 부르지 않도록, 무엇을 넣으면 되는지 알려준다
+        return ("'{}' 라는 지명을 찾지 못했습니다. 이 도구를 다시 부르지 말고 "
+                "사용자에게 더 큰 행정구역 이름을 물어보세요. "
+                "국내는 시·군·구 이름이면 됩니다 (예: 서울, 마포구, 성남 분당, 수원, 부산). "
+                "해외는 영문 도시명을 쓰세요 (예: Tokyo).").format(city)
     except urllib.error.HTTPError as e:
         return "날씨 서버가 오류를 돌려줬습니다 ({}). 잠시 뒤 다시 시도하세요.".format(e.code)
     except urllib.error.URLError as e:
