@@ -33,6 +33,29 @@ def _locale() -> dict:
     return {"hl": "ko", "gl": "KR", "ceid": "KR:ko"}
 
 
+def _feeds() -> list:
+    """구글 뉴스가 막힌 곳에서 쓸 대체 RSS 주소 (config.json 의 news.feeds)."""
+    raw = (context.cfg.raw if context.cfg else {}) or {}
+    return [f for f in ((raw.get("news") or {}).get("feeds") or []) if f]
+
+
+def _from_feeds(keyword: str, count: int):
+    """설정된 RSS 들을 돌며 되는 곳에서 기사를 모은다. 키워드는 여기서 거른다."""
+    items, errors = [], []
+    for url in _feeds():
+        try:
+            found = _items(fetch(url), count * 3)
+        except NetError as e:
+            errors.append("{}: {}".format(url, e))
+            continue
+        if keyword:
+            low = keyword.lower()
+            found = [i for i in found if low in i["title"].lower()
+                     or low in i["summary"].lower()]
+        items += found
+    return items[:count], errors
+
+
 def _when(value: str) -> str:
     try:
         moment = parsedate_to_datetime(value).astimezone(context.cfg.tz)
@@ -131,7 +154,15 @@ def news(keyword: str = "", category: str = "", count: int = 8) -> str:
 
     try:
         items = _items(fetch(url, params), count)
-    except NetError as e:
-        return "뉴스를 가져오지 못했습니다: {}".format(e)
+    except NetError as google_error:
+        # 구글 뉴스가 막힌 회사도 있어서, 설정해둔 다른 RSS 로 한 번 더 해본다
+        items, errors = _from_feeds(keyword, count)
+        if not items:
+            rows = ["뉴스를 가져오지 못했습니다: {}".format(google_error)]
+            rows += ["  " + e for e in errors]
+            if not _feeds():
+                rows.append("  config.json 의 news.feeds 에 회사에서 열리는 "
+                            "언론사 RSS 주소를 넣으면 그쪽으로 가져옵니다.")
+            return "\n".join(rows)
 
     return _render(items, "{} {}건".format(header, len(items)))

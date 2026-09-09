@@ -24,7 +24,7 @@ def _mask(value: str) -> str:
 
 
 def check_gemini(cfg) -> bool:
-    print("\n[1/4] Gemini API")
+    print("\n[1/5] Gemini API")
     key = os.environ.get("GEMINI_API_KEY", "")
     if not key:
         print(NG, "GEMINI_API_KEY 가 없습니다.")
@@ -94,7 +94,7 @@ def check_gemini(cfg) -> bool:
 
 
 def check_mail(cfg) -> bool:
-    print("\n[2/4] 메일")
+    print("\n[2/5] 메일")
     user = os.environ.get("IMAP_USER", "")
     password = os.environ.get("IMAP_PASS", "")
     if not user or not password:
@@ -218,8 +218,41 @@ def _close(conn) -> None:
             pass
 
 
+def check_net(cfg) -> bool:
+    """인터넷을 쓰는 도구들이 실제로 붙는지 하나씩 본다."""
+    from .net import NetError, fetch
+
+    print("\n[3/5] 인터넷 도구")
+    targets = [
+        ("날씨", "https://geocoding-api.open-meteo.com/v1/search?name=Seoul&count=1"),
+        ("뉴스", "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko"),
+        ("환율", "https://open.er-api.com/v6/latest/USD"),
+        ("위키백과", "https://ko.wikipedia.org/w/api.php?action=query&meta=siteinfo&format=json"),
+        ("주가", "https://query1.finance.yahoo.com/v8/finance/chart/005930.KS"),
+    ]
+
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if proxy:
+        print(DOT, "프록시:", proxy)
+
+    failed = []
+    for name, url in targets:
+        try:
+            fetch(url, timeout=8)
+            print(OK, "{} — 연결됨".format(name))
+        except NetError as e:
+            print(NG, "{} — {}".format(name, e))
+            failed.append(name)
+
+    if failed:
+        print(DOT, "막힌 도구({})는 못 씁니다. 나머지 기능은 그대로 동작합니다."
+              .format(", ".join(failed)))
+        print(DOT, "회사 프록시를 쓰신다면 .env 에 HTTPS_PROXY=http://주소:포트 를 넣어보세요.")
+    return not failed
+
+
 def check_tools(cfg) -> bool:
-    print("\n[3/4] 도구")
+    print("\n[4/5] 도구")
     problems = registry.load_all(cfg.root)
     for p in problems:
         print(NG, p)
@@ -243,7 +276,7 @@ def check_tools(cfg) -> bool:
 
 
 def check_files(cfg) -> bool:
-    print("\n[4/4] 폴더")
+    print("\n[5/5] 폴더")
     for name in ("data", "data/notes", "tools"):
         path = cfg.root / name
         mark = OK if path.exists() else NG
@@ -269,7 +302,8 @@ def run() -> int:
     print(" AI 업무 비서 — 연결 점검")
     print("=" * 52)
 
-    results = [check_gemini(cfg), check_mail(cfg), check_tools(cfg), check_files(cfg)]
+    results = [check_gemini(cfg), check_mail(cfg), check_net(cfg),
+               check_tools(cfg), check_files(cfg)]
 
     print("\n" + "=" * 52)
     if all(results):

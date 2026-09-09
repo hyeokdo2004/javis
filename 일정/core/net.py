@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,8 +35,9 @@ def fetch(url: str, params: dict = None, *, timeout: int = 20,
         raise NetError("서버가 오류를 돌려줬습니다 ({} {}). 주소가 맞는지 확인하세요."
                        .format(e.code, e.reason)) from e
     except urllib.error.URLError as e:
-        raise NetError("연결하지 못했습니다: {}. 인터넷 연결이나 회사 방화벽을 확인하세요."
-                       .format(e.reason)) from e
+        raise NetError(_why(e.reason)) from e
+    except ssl.SSLError as e:
+        raise NetError(_why(e)) from e
     except OSError as e:
         raise NetError("연결 중 오류: {}".format(e)) from e
 
@@ -47,6 +49,23 @@ def fetch(url: str, params: dict = None, *, timeout: int = 20,
         except (UnicodeDecodeError, LookupError):
             continue
     return raw.decode("utf-8", "replace")
+
+
+def _why(reason) -> str:
+    text = str(reason)
+    if "WRONG_VERSION_NUMBER" in text or "UNEXPECTED_EOF" in text:
+        return ("연결이 중간에서 가로채인 것 같습니다 ({}). 회사 방화벽·보안 프로그램이 "
+                "이 주소를 막고 있을 때 나는 증상입니다. 프록시를 쓰는 환경이면 .env 에 "
+                "HTTPS_PROXY=http://프록시주소:포트 를 넣어보세요.").format(text)
+    if "CERTIFICATE_VERIFY_FAILED" in text:
+        return ("보안 인증서를 확인하지 못했습니다 ({}). 회사 보안 프로그램이 통신을 "
+                "들여다보는 환경일 수 있습니다. 전산 담당자에게 사내 인증서 설정을 문의하세요."
+                ).format(text)
+    if "getaddrinfo" in text or "Name or service" in text or "11001" in text:
+        return "주소를 찾지 못했습니다 ({}). 인터넷 연결이나 DNS 를 확인하세요.".format(text)
+    if "timed out" in text.lower():
+        return "응답이 없어 시간이 초과됐습니다 ({}). 방화벽에 막혔을 수 있습니다.".format(text)
+    return "연결하지 못했습니다: {}. 인터넷 연결이나 회사 방화벽을 확인하세요.".format(text)
 
 
 def _ascii(headers: dict) -> dict:

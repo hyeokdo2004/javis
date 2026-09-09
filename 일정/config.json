@@ -31,6 +31,12 @@
     "body_limit": 1500
   },
 
+  "news": {
+    "_설명": "기본은 구글 뉴스입니다. 회사에서 news.google.com 이 막혀 있으면 아래에 열리는 언론사 RSS 주소를 넣으세요",
+    "_예시": ["https://www.hankyung.com/feed/all-news", "https://news.sbs.co.kr/news/headlineRssFeed.do?plink=RSSREADER"],
+    "feeds": []
+  },
+
   "weather": {
     "_설명": "날씨 도구 기본값. 도시를 말 안 하면 여기 도시를 씁니다",
     "default_city": "서울",

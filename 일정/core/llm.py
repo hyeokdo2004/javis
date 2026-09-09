@@ -134,7 +134,11 @@ class Gemini:
           {"role": "assistant", "text": "...", "calls": [ToolCall...]}
           {"role": "tool",      "name": "...", "call_id": "...", "result": "..."}
         """
-        models = [self.model] + list(self.fallbacks)
+        # 실행 중에 self.model 이 대체 모델로 바뀌면 목록에 같은 이름이 두 번 들어간다
+        models = []
+        for name in [self.model] + list(self.fallbacks):
+            if name and name not in models:
+                models.append(name)
         last_error = None
 
         for index, model in enumerate(models):
