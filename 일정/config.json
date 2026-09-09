@@ -37,6 +37,12 @@
     "timezone": "Asia/Seoul"
   },
 
+  "files": {
+    "_설명": "read_file / list_files 가 볼 수 있는 폴더. 이 폴더와 그 아래만 읽습니다 (읽기 전용)",
+    "_예시": "C:/Users/sentinel/Desktop/업무  ← 슬래시(/) 로 쓰세요. 비워두면 비서 폴더를 봅니다",
+    "root": ""
+  },
+
   "profile": {
     "name": "사용자",
     "_notes": "여기에 본인 상황을 적어두면 비서가 훨씬 알아듣습니다. 회사·직무·자주 쓰는 용어·사람 이름 등",
