@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import locale
 import os
 import shlex
@@ -18,6 +19,10 @@ import subprocess
 import sys
 import traceback
 from pathlib import Path
+
+# Gemini 가 받아주는 함수 이름: 영문/숫자/_ . : - 만, 첫 글자는 영문이나 밑줄.
+# 한글 이름을 쓰면 요청 전체가 400 으로 거절당하므로 등록할 때 걸러낸다.
+_NAME_RULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$")
 
 
 def _decode_output(data: bytes) -> str:
@@ -40,6 +45,16 @@ def _decode_output(data: bytes) -> str:
     return data.decode("utf-8", "replace")
 
 _REGISTRY: dict = {}
+_NAME_PROBLEMS: list = []
+
+
+def bad_name(name: str) -> str:
+    """이름이 규칙에 안 맞으면 이유를 돌려준다. 맞으면 빈 문자열."""
+    if not _NAME_RULE.match(name or ""):
+        return ("도구 이름 '{}' 은 쓸 수 없습니다 — 영문/숫자/밑줄(_)/점(.)/콜론(:)/하이픈(-) 만 되고 "
+                "첫 글자는 영문이나 밑줄이어야 합니다. 한글 이름은 안 됩니다 "
+                "(예: '메일정리' → 'mail_cleanup')").format(name)
+    return ""
 
 EMPTY_SCHEMA = {"type": "object", "properties": {}, "required": []}
 
@@ -66,6 +81,10 @@ class Tool:
 def tool(name, description, parameters=None, *, confirm=False, danger=""):
     """tools/ 안의 함수에 붙이면 비서가 쓸 수 있는 도구가 된다."""
     def deco(fn):
+        problem = bad_name(name)
+        if problem:
+            _NAME_PROBLEMS.append(problem)
+            return fn  # 등록하지 않는다 — 하나 때문에 전체 요청이 막히므로
         _REGISTRY[name] = Tool(name, description, parameters, fn,
                                confirm=confirm, source="파이썬", danger=danger)
         return fn
@@ -126,6 +145,10 @@ def load_command_tools(path: Path) -> list:
     for name, spec in data.items():
         if name.startswith("_"):
             continue  # 주석용 키
+        problem = bad_name(name)
+        if problem:
+            problems.append("commands.json — " + problem)
+            continue
         try:
             _REGISTRY[name] = _make_command_tool(name, spec)
         except (KeyError, ValueError) as e:
@@ -202,4 +225,6 @@ def load_all(root: Path) -> list:
     problems = []
     problems += load_python_tools(root / "tools")
     problems += load_command_tools(root / "commands.json")
+    problems += _NAME_PROBLEMS
+    del _NAME_PROBLEMS[:]
     return problems

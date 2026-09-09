@@ -68,7 +68,7 @@ def check_gemini(cfg) -> bool:
 
     # 도구 호출(function calling)이 되는지가 핵심이라 따로 확인한다
     probe = [{
-        "name": "확인용_더하기",
+        "name": "check_add",  # 함수 이름은 반드시 영문 (한글이면 API 가 400 으로 거절)
         "description": "두 수를 더한다",
         "parameters": {
             "type": "object",
@@ -94,7 +94,7 @@ def check_gemini(cfg) -> bool:
 
 
 def check_mail(cfg) -> bool:
-    print("\n[2/4] 메일 (IMAP)")
+    print("\n[2/4] 메일")
     user = os.environ.get("IMAP_USER", "")
     password = os.environ.get("IMAP_PASS", "")
     if not user or not password:
@@ -102,63 +102,99 @@ def check_mail(cfg) -> bool:
         return True  # 메일은 선택 기능이라 실패로 치지 않는다
 
     import imaplib
-    import socket
-    import ssl
+    import poplib
 
     mail_cfg = cfg.mail or {}
-    hosts = []
-    candidates = [os.environ.get("IMAP_HOST"), mail_cfg.get("imap_host")]
-    candidates += list(mail_cfg.get("imap_fallbacks") or [])
-    candidates += ["mail.hiworks.co.kr", "mailapp.hiworks.co.kr",
-                   "outlook.office365.com", "imap.gmail.com"]
-    for h in candidates:
-        if h and h not in hosts:
-            hosts.append(h)
-    port = int(os.environ.get("IMAP_PORT") or mail_cfg.get("imap_port", 993))
-
     print(DOT, "계정:", user)
-    for host in hosts:
-        print(DOT, "시도: {}:{}".format(host, port))
+
+    plan = []  # (프로토콜, 주소, 포트)
+    protocol = (os.environ.get("MAIL_PROTOCOL") or mail_cfg.get("protocol", "auto")).lower()
+
+    if protocol in ("auto", "imap"):
+        imap_port = int(os.environ.get("IMAP_PORT") or mail_cfg.get("imap_port", 993))
+        for h in _candidates(os.environ.get("IMAP_HOST"), mail_cfg.get("imap_host"),
+                             mail_cfg.get("imap_fallbacks"),
+                             ["outlook.office365.com", "imap.gmail.com", "imap.naver.com"]):
+            plan.append(("IMAP", h, imap_port))
+
+    if protocol in ("auto", "pop3"):
+        pop3_port = int(os.environ.get("POP3_PORT") or mail_cfg.get("pop3_port", 995))
+        for h in _candidates(os.environ.get("POP3_HOST"), mail_cfg.get("pop3_host"),
+                             mail_cfg.get("pop3_fallbacks"),
+                             ["pop3s.hiworks.com", "pop.gmail.com", "pop.naver.com"]):
+            plan.append(("POP3", h, pop3_port))
+
+    for proto, host, port in plan:
+        print(DOT, "시도: {} {}:{}".format(proto, host, port))
         try:
-            conn = imaplib.IMAP4_SSL(host, port, timeout=10)
-        except (socket.gaierror, socket.timeout, TimeoutError, OSError, ssl.SSLError) as e:
-            print("       └ 접속 불가 ({})".format(type(e).__name__))
+            if proto == "IMAP":
+                conn = imaplib.IMAP4_SSL(host, port, timeout=10)
+            else:
+                conn = poplib.POP3_SSL(host, port, timeout=10)
+        except OSError as e:
+            print("       └ 접속 불가 ({}) — 없는 주소이거나 방화벽에 막힌 것입니다"
+                  .format(type(e).__name__))
             continue
+
         try:
-            conn.login(user, password)
-        except imaplib.IMAP4.error as e:
-            reason = str(e)
-            print("       └ 서버는 열렸는데 로그인 실패: {}".format(reason))
-            if "basic authentication is disabled" in reason.lower():
-                print("         (이 서버는 ID/비밀번호 로그인을 막아둔 곳입니다 — 당신 메일 서버가 아닙니다)")
+            if proto == "IMAP":
+                conn.login(user, password)
+                conn.select("INBOX", readonly=True)
+                status, data = conn.uid("SEARCH", None, "ALL")
+                count = len((data[0] or b"").split()) if status == "OK" else 0
+            else:
+                conn.user(user)
+                conn.pass_(password)
+                count = len(conn.list()[1])
+        except (imaplib.IMAP4.error, poplib.error_proto) as e:
+            print("       └ 서버는 열렸는데 로그인 실패: {}".format(e))
+            _hint(str(e))
             _close(conn)
-            continue  # 다음 후보 서버로
-        try:
-            conn.select("INBOX", readonly=True)
-            status, data = conn.uid("SEARCH", None, "ALL")
-            count = len((data[0] or b"").split()) if status == "OK" else 0
-            print(OK, "로그인 성공. INBOX {}통".format(count))
-            if host != (os.environ.get("IMAP_HOST") or mail_cfg.get("imap_host")):
-                print(DOT, "→ config.json 의 mail.imap_host 를 '{}' 로 바꾸세요.".format(host))
-            return True
-        finally:
-            _close(conn)
+            continue
+
+        print(OK, "{} 로그인 성공. 받은편지함 {}통".format(proto, count))
+        _close(conn)
+        if (proto.lower() != (mail_cfg.get("protocol") or "").lower()
+                and (mail_cfg.get("protocol") or "auto") != "auto"):
+            print(DOT, "→ config.json 의 mail.protocol 을 '{}' 로 바꾸면 더 빨리 붙습니다."
+                  .format(proto.lower()))
+        return True
 
     print(NG, "모든 후보 서버에서 실패했습니다.")
-    print(DOT, "도메인({}) 의 메일 서버 주소를 관리자에게 확인해 .env 의 IMAP_HOST 에 넣으세요."
-          .format(user.split("@")[-1] if "@" in user else "회사"))
-    print(DOT, "하이웍스라면 보통 mail.hiworks.co.kr:993 (SSL) 이고, "
-               "관리자 화면에서 IMAP 사용이 켜져 있어야 합니다.")
+    print(DOT, "하이웍스({}) 라면: 웹메일 로그인 → [메일 > 환경설정 > 기본 설정] 에서 POP3 사용을 켜고,"
+          .format(user.split("@")[-1] if "@" in user else "회사 메일"))
+    print(DOT, "[보안 설정] 에서 '메일 전용 비밀번호' 를 따로 만든 뒤 그 비밀번호를 .env 의 IMAP_PASS 에 넣으세요.")
+    print(DOT, "회사 방화벽이 995/993 포트를 막고 있을 수도 있습니다.")
     return False
 
 
-def _close(conn) -> None:
-    import imaplib
+def _candidates(*groups) -> list:
+    """앞에서부터 우선순위대로, 중복과 빈 값을 걸러 주소 목록을 만든다."""
+    out = []
+    for g in groups:
+        for h in ([g] if isinstance(g, str) or g is None else list(g)):
+            if h and h not in out:
+                out.append(h)
+    return out
 
-    for fn in ("close", "logout"):
+
+def _hint(reason: str) -> None:
+    low = reason.lower()
+    if "basic authentication is disabled" in low:
+        print("         (이 서버는 ID/비밀번호 로그인을 막아둔 곳입니다 — 당신 메일 서버가 아닙니다)")
+    elif "pop3" in low or "auth" in low or "login" in low or "password" in low:
+        print("         (하이웍스는 [메일>환경설정]에서 POP3 사용을 켜고 "
+              "'메일 전용 비밀번호'를 따로 만들어야 합니다)")
+
+
+def _close(conn) -> None:
+    for fn in ("close", "logout", "quit"):
+        fn_obj = getattr(conn, fn, None)
+        if fn_obj is None:
+            continue
         try:
-            getattr(conn, fn)()
-        except (imaplib.IMAP4.error, OSError):
+            fn_obj()
+        except Exception:  # 닫는 중 나는 오류는 알릴 게 없다
             pass
 
 

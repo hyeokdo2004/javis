@@ -1,13 +1,18 @@
-"""메일 도구 — IMAP 으로 메일을 읽어온다. 요약은 비서(모델)가 한다.
+"""메일 도구 — 메일을 읽어온다. 요약은 비서(모델)가 한다.
 
-Hiworks, Outlook/Office365, Gmail, 네이버 등 IMAP 을 지원하는 곳이면 다 됩니다.
-서버 주소는 config.json 의 mail.imap_host 또는 .env 의 IMAP_HOST 로 지정합니다.
+IMAP 과 POP3 를 둘 다 지원합니다.
+  · IMAP  — Office365, Gmail, 네이버 등. 폴더·안읽음·서버 검색을 쓸 수 있습니다.
+  · POP3  — 하이웍스(pop3s.hiworks.com:995) 처럼 IMAP 을 안 여는 곳.
+            받은편지함만 통째로 내려받아 이쪽에서 거릅니다.
+
+어느 쪽을 쓸지는 config.json 의 mail.protocol 로 정합니다 (기본 auto = 되는 쪽).
 """
 from __future__ import annotations
 
 import email
 import email.utils
 import imaplib
+import poplib
 import re
 from datetime import datetime, timedelta
 from email.header import decode_header, make_header
@@ -20,22 +25,35 @@ _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"[ \t\r\f\v]+")
 _NL = re.compile(r"\n{3,}")
 
+# POP3 는 통째로 내려받아 거르므로, 한 번에 훑을 통수를 제한한다
+_POP3_SCAN_LIMIT = 120
+
 
 # ────────────────────────────────────────────────────────────
-# IMAP 기본
+# 설정
 # ────────────────────────────────────────────────────────────
+
+def _hosts(primary, fallbacks) -> list:
+    out = []
+    for h in [primary] + list(fallbacks or []):
+        if h and h not in out:
+            out.append(h)
+    return out
+
 
 def _settings() -> dict:
     mail_cfg = (context.cfg.mail if context.cfg else {}) or {}
-    primary = env("IMAP_HOST") or mail_cfg.get("imap_host", "mail.hiworks.co.kr")
-    hosts = [primary]
-    for h in (mail_cfg.get("imap_fallbacks") or []):
-        if h and h not in hosts:
-            hosts.append(h)
+    protocol = (env("MAIL_PROTOCOL") or mail_cfg.get("protocol", "auto")).lower()
+    if protocol not in ("auto", "imap", "pop3"):
+        protocol = "auto"
     return {
-        "host": primary,
-        "hosts": hosts,
-        "port": int(env("IMAP_PORT") or mail_cfg.get("imap_port", 993)),
+        "protocol": protocol,
+        "imap_hosts": _hosts(env("IMAP_HOST") or mail_cfg.get("imap_host"),
+                             mail_cfg.get("imap_fallbacks")),
+        "imap_port": int(env("IMAP_PORT") or mail_cfg.get("imap_port", 993)),
+        "pop3_hosts": _hosts(env("POP3_HOST") or mail_cfg.get("pop3_host"),
+                             mail_cfg.get("pop3_fallbacks")),
+        "pop3_port": int(env("POP3_PORT") or mail_cfg.get("pop3_port", 995)),
         "user": env("IMAP_USER", required=True),
         "password": env("IMAP_PASS", required=True),
         "folder": mail_cfg.get("folder", "INBOX"),
@@ -43,36 +61,9 @@ def _settings() -> dict:
     }
 
 
-def _connect(s: dict) -> imaplib.IMAP4_SSL:
-    """주소가 여러 개면 붙는 곳까지 순서대로 시도한다."""
-    failures = []
-    for host in s.get("hosts") or [s["host"]]:
-        try:
-            conn = imaplib.IMAP4_SSL(host, s["port"], timeout=20)
-        except OSError as e:  # 이름 못 찾음 / 접속 불가 → 다음 후보
-            failures.append("{}: 접속 불가 ({})".format(host, type(e).__name__))
-            continue
-        try:
-            conn.login(s["user"], s["password"])
-        except imaplib.IMAP4.error as e:
-            _close(conn)
-            failures.append("{}: 로그인 실패 ({})".format(host, e))
-            continue
-        return conn
-
-    raise RuntimeError(
-        "메일 서버에 붙지 못했습니다.\n  " + "\n  ".join(failures)
-        + "\n  .env 의 IMAP_HOST / IMAP_USER / IMAP_PASS 를 확인하세요. "
-          "(하이웍스는 보통 mail.hiworks.co.kr:993)")
-
-
-def _close(conn) -> None:
-    for fn in ("close", "logout"):
-        try:
-            getattr(conn, fn)()
-        except (imaplib.IMAP4.error, OSError):
-            pass
-
+# ────────────────────────────────────────────────────────────
+# 메일 파싱 (프로토콜과 무관)
+# ────────────────────────────────────────────────────────────
 
 def _decode(value) -> str:
     if not value:
@@ -134,34 +125,38 @@ def _attachments(msg) -> list:
     return names
 
 
-def _fetch(uids, conn, s: dict, body_limit: int) -> list:
-    mails = []
-    for uid in uids:
-        status, data = conn.uid("FETCH", str(uid), "(RFC822)")
-        if status != "OK" or not data or not data[0]:
-            continue
-        raw = data[0][1]
-        if not isinstance(raw, (bytes, bytearray)):
-            continue
-        msg = email.message_from_bytes(raw)
+def _record(uid, raw: bytes, body_limit: int) -> dict:
+    """원본 메일 바이트 → 화면에 보여줄 한 통의 정보."""
+    msg = email.message_from_bytes(raw)
+    try:
+        when = email.utils.parsedate_to_datetime(msg.get("Date"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=context.cfg.tz)
+        when = when.astimezone(context.cfg.tz)
+    except (TypeError, ValueError):
+        when = None
 
-        try:
-            received = email.utils.parsedate_to_datetime(msg.get("Date"))
-            when = received.astimezone(context.cfg.tz).strftime("%m/%d %H:%M")
-        except (TypeError, ValueError):
-            when = "?"
+    return {
+        "uid": uid,
+        "dt": when,
+        "when": when.strftime("%m/%d %H:%M") if when else "?",
+        "subject": _decode(msg.get("Subject")) or "(제목 없음)",
+        "from": _decode(msg.get("From")),
+        "to": _decode(msg.get("To")),
+        "cc": _decode(msg.get("Cc")),
+        "attachments": _attachments(msg),
+        "body": _body(msg, body_limit),
+    }
 
-        mails.append({
-            "uid": uid,
-            "when": when,
-            "subject": _decode(msg.get("Subject")) or "(제목 없음)",
-            "from": _decode(msg.get("From")),
-            "to": _decode(msg.get("To")),
-            "cc": _decode(msg.get("Cc")),
-            "attachments": _attachments(msg),
-            "body": _body(msg, body_limit),
-        })
-    return mails
+
+def _matches(m: dict, keyword: str, sender: str) -> bool:
+    if keyword:
+        low = keyword.lower()
+        if low not in m["subject"].lower() and low not in m["body"].lower():
+            return False
+    if sender and sender.lower() not in m["from"].lower():
+        return False
+    return True
 
 
 def _render(mails: list, header: str) -> str:
@@ -180,6 +175,161 @@ def _render(mails: list, header: str) -> str:
         rows.append(m["body"] or "(본문 없음)")
         rows.append("")
     return "\n".join(rows)
+
+
+# ────────────────────────────────────────────────────────────
+# 메일함 — IMAP / POP3 를 같은 모양으로 감싼다
+# ────────────────────────────────────────────────────────────
+
+class ImapBox:
+    kind = "IMAP"
+
+    def __init__(self, conn, s: dict):
+        self.conn = conn
+        self.s = s
+        status, _ = conn.select('"{}"'.format(s["folder"]), readonly=True)
+        if status != "OK":
+            status, _ = conn.select(s["folder"], readonly=True)
+        if status != "OK":
+            raise RuntimeError("메일함 '{}' 을 열지 못했습니다.".format(s["folder"]))
+
+    def _uids(self, criteria: list) -> list:
+        status, data = self.conn.uid("SEARCH", None, *criteria)
+        if status != "OK":
+            raise RuntimeError("메일 검색에 실패했습니다.")
+        return sorted(int(x) for x in (data[0] or b"").split())
+
+    def _fetch(self, uids: list, body_limit: int) -> list:
+        mails = []
+        for uid in uids:
+            status, data = self.conn.uid("FETCH", str(uid), "(RFC822)")
+            if status != "OK" or not data or not data[0]:
+                continue
+            raw = data[0][1]
+            if isinstance(raw, (bytes, bytearray)):
+                mails.append(_record(uid, raw, body_limit))
+        return mails
+
+    def recent(self, since, limit: int, body_limit: int, unread_only: bool = False):
+        criteria = ["SINCE", since.strftime("%d-%b-%Y")]
+        if unread_only:
+            criteria = ["UNSEEN"] + criteria
+        uids = self._uids(criteria)
+        return self._fetch(uids[-limit:], body_limit), len(uids)
+
+    def search(self, keyword: str, sender: str, since, limit: int, body_limit: int):
+        criteria = ["SINCE", since.strftime("%d-%b-%Y")]
+        if sender:
+            criteria += ["FROM", sender]
+
+        # 한글 검색어는 서버가 UTF-8 검색을 지원해야 한다. 안 되면 직접 거른다
+        if keyword:
+            try:
+                status, data = self.conn.uid(
+                    "SEARCH", "CHARSET", "UTF-8", *(criteria + ["TEXT", keyword]))
+                if status == "OK":
+                    uids = sorted(int(x) for x in (data[0] or b"").split())
+                    if uids:
+                        return self._fetch(uids[-limit:], body_limit)
+            except imaplib.IMAP4.error:
+                pass
+
+        uids = self._uids(criteria)[-200:]
+        mails = [m for m in self._fetch(uids, body_limit) if _matches(m, keyword, sender)]
+        return mails[-limit:]
+
+    def one(self, uid: int, body_limit: int):
+        return self._fetch([uid], body_limit)
+
+    def close(self):
+        for fn in ("close", "logout"):
+            try:
+                getattr(self.conn, fn)()
+            except (imaplib.IMAP4.error, OSError):
+                pass
+
+
+class Pop3Box:
+    """POP3 는 검색도 폴더도 없다. 최근 것부터 내려받아 여기서 거른다."""
+
+    kind = "POP3"
+
+    def __init__(self, conn, s: dict):
+        self.conn = conn
+        self.s = s
+        self.total = len(conn.list()[1])
+
+    def _download(self, count: int, body_limit: int) -> list:
+        """뒤(최신)에서부터 count 통. 번호는 서버가 준 순번 그대로 쓴다."""
+        first = max(1, self.total - count + 1)
+        mails = []
+        for num in range(first, self.total + 1):
+            try:
+                raw = b"\r\n".join(self.conn.retr(num)[1])
+            except poplib.error_proto:
+                continue
+            mails.append(_record(num, raw, body_limit))
+        return mails
+
+    def recent(self, since, limit: int, body_limit: int, unread_only: bool = False):
+        mails = self._download(min(max(limit, 20), _POP3_SCAN_LIMIT), body_limit)
+        return mails[-limit:], self.total
+
+    def search(self, keyword: str, sender: str, since, limit: int, body_limit: int):
+        mails = self._download(_POP3_SCAN_LIMIT, body_limit)
+        mails = [m for m in mails
+                 if (m["dt"] is None or m["dt"] >= since)
+                 and _matches(m, keyword, sender)]
+        return mails[-limit:]
+
+    def one(self, uid: int, body_limit: int):
+        try:
+            raw = b"\r\n".join(self.conn.retr(int(uid))[1])
+        except poplib.error_proto:
+            return []
+        return [_record(int(uid), raw, body_limit)]
+
+    def close(self):
+        try:
+            self.conn.quit()
+        except (poplib.error_proto, OSError):
+            pass
+
+
+def _open_imap(host: str, s: dict):
+    conn = imaplib.IMAP4_SSL(host, s["imap_port"], timeout=20)
+    conn.login(s["user"], s["password"])
+    return ImapBox(conn, s)
+
+
+def _open_pop3(host: str, s: dict):
+    conn = poplib.POP3_SSL(host, s["pop3_port"], timeout=20)
+    conn.user(s["user"])
+    conn.pass_(s["password"])
+    return Pop3Box(conn, s)
+
+
+def open_box(s: dict):
+    """설정된 프로토콜·주소를 순서대로 시도해서 열리는 메일함을 준다."""
+    plan = []
+    if s["protocol"] in ("auto", "imap"):
+        plan += [("imap", h) for h in s["imap_hosts"]]
+    if s["protocol"] in ("auto", "pop3"):
+        plan += [("pop3", h) for h in s["pop3_hosts"]]
+
+    failures = []
+    for proto, host in plan:
+        try:
+            return (_open_imap if proto == "imap" else _open_pop3)(host, s)
+        except (imaplib.IMAP4.error, poplib.error_proto) as e:
+            failures.append("{} {}: 로그인 실패 ({})".format(proto.upper(), host, e))
+        except OSError as e:  # 이름 못 찾음 / 접속 불가 / 시간 초과
+            failures.append("{} {}: 접속 불가 ({})".format(proto.upper(), host, type(e).__name__))
+
+    raise RuntimeError(
+        "메일 서버에 붙지 못했습니다.\n  " + "\n  ".join(failures or ["시도할 주소가 없습니다"])
+        + "\n  'python assistant.py 진단' 을 돌려 어떤 주소가 되는지 확인하세요."
+          " (하이웍스는 POP3 pop3s.hiworks.com:995, 메일 전용 비밀번호가 따로 있습니다)")
 
 
 # ────────────────────────────────────────────────────────────
@@ -207,48 +357,24 @@ def read_mail(hours: int = 24, max_count: int = 30, unread_only: bool = False) -
     s = _settings()
     hours = max(1, min(int(hours or 24), 24 * 30))
     max_count = max(1, min(int(max_count or 30), 60))
-
-    conn = _connect(s)
-    try:
-        status, _ = conn.select('"{}"'.format(s["folder"]), readonly=True)
-        if status != "OK":
-            status, _ = conn.select(s["folder"], readonly=True)
-        if status != "OK":
-            return "메일함 '{}' 을 열지 못했습니다.".format(s["folder"])
-
-        since = (datetime.now(context.cfg.tz) - timedelta(hours=hours))
-        criteria = ["SINCE", since.strftime("%d-%b-%Y")]
-        if unread_only:
-            criteria = ["UNSEEN"] + criteria
-
-        status, data = conn.uid("SEARCH", None, *criteria)
-        if status != "OK":
-            return "메일 검색에 실패했습니다."
-
-        uids = [int(x) for x in (data[0] or b"").split()]
-        uids.sort()
-        total = len(uids)
-        uids = uids[-max_count:]
-        mails = _fetch(uids, conn, s, s["body_limit"])
-    finally:
-        _close(conn)
-
-    # IMAP 의 SINCE 는 '날짜' 단위라 시간 단위로 한 번 더 거른다
     cutoff = datetime.now(context.cfg.tz) - timedelta(hours=hours)
-    filtered = []
-    for m in mails:
-        try:
-            when = datetime.strptime(m["when"], "%m/%d %H:%M").replace(
-                year=cutoff.year, tzinfo=context.cfg.tz)
-            if when >= cutoff - timedelta(days=1):
-                filtered.append(m)
-        except ValueError:
-            filtered.append(m)
 
-    header = "최근 {}시간 메일 {}통{}".format(
-        hours, len(filtered),
-        " (전체 {}통 중 최근 것만)".format(total) if total > len(filtered) else "")
-    return _render(filtered, header)
+    box = open_box(s)
+    try:
+        mails, total = box.recent(cutoff, max_count, s["body_limit"], unread_only)
+    finally:
+        box.close()
+
+    # 서버 검색은 '날짜' 단위라 시간 단위로 한 번 더 거른다
+    mails = [m for m in mails if m["dt"] is None or m["dt"] >= cutoff]
+
+    note = ""
+    if box.kind == "POP3" and unread_only:
+        note = " (POP3 는 안읽음 표시가 없어 전체에서 가져왔습니다)"
+    header = "최근 {}시간 메일 {}통{}{}".format(
+        hours, len(mails),
+        " (메일함 {}통 중 최근 것만)".format(total) if total > len(mails) else "", note)
+    return _render(mails, header)
 
 
 @tool(
@@ -272,45 +398,13 @@ def search_mail(keyword: str, sender: str = "", days: int = 14, max_count: int =
     s = _settings()
     days = max(1, min(int(days or 14), 365))
     max_count = max(1, min(int(max_count or 15), 40))
+    since = datetime.now(context.cfg.tz) - timedelta(days=days)
 
-    conn = _connect(s)
+    box = open_box(s)
     try:
-        status, _ = conn.select('"{}"'.format(s["folder"]), readonly=True)
-        if status != "OK":
-            conn.select(s["folder"], readonly=True)
-
-        since = (datetime.now(context.cfg.tz) - timedelta(days=days)).strftime("%d-%b-%Y")
-        criteria = ["SINCE", since]
-        if sender:
-            criteria += ["FROM", sender]
-
-        # 한글 검색어는 서버가 UTF-8 검색을 지원해야 한다. 안 되면 제목으로 직접 거른다
-        uids = []
-        if keyword:
-            try:
-                status, data = conn.uid(
-                    "SEARCH", "CHARSET", "UTF-8", *(criteria + ["TEXT", keyword]))
-                if status == "OK":
-                    uids = [int(x) for x in (data[0] or b"").split()]
-            except imaplib.IMAP4.error:
-                uids = []
-
-        if not uids:
-            status, data = conn.uid("SEARCH", None, *criteria)
-            if status != "OK":
-                return "메일 검색에 실패했습니다."
-            uids = [int(x) for x in (data[0] or b"").split()]
-            uids = uids[-200:]  # 직접 거를 땐 범위를 제한
-            mails = _fetch(uids, conn, s, s["body_limit"])
-            low = keyword.lower()
-            mails = [m for m in mails
-                     if low in m["subject"].lower() or low in m["body"].lower()]
-            mails = mails[-max_count:]
-        else:
-            uids.sort()
-            mails = _fetch(uids[-max_count:], conn, s, s["body_limit"])
+        mails = box.search(keyword, sender, since, max_count, s["body_limit"])
     finally:
-        _close(conn)
+        box.close()
 
     return _render(mails, "'{}' 검색 결과 {}통 (최근 {}일)".format(keyword, len(mails), days))
 
@@ -326,14 +420,11 @@ def search_mail(keyword: str, sender: str = "", days: int = 14, max_count: int =
 )
 def read_one_mail(uid: int) -> str:
     s = _settings()
-    conn = _connect(s)
+    box = open_box(s)
     try:
-        status, _ = conn.select('"{}"'.format(s["folder"]), readonly=True)
-        if status != "OK":
-            conn.select(s["folder"], readonly=True)
-        mails = _fetch([int(uid)], conn, s, 20000)
+        mails = box.one(int(uid), 20000)
     finally:
-        _close(conn)
+        box.close()
 
     if not mails:
         return "그 번호의 메일을 찾지 못했습니다: {}".format(uid)

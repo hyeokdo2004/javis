@@ -14,11 +14,19 @@
 
   "mail": {
     "_설명": "메일 기능을 안 쓰면 이 부분은 무시됩니다",
-    "_imap_host": "하이웍스는 mail.hiworks.co.kr 입니다 (imap.hiworks.com 은 없는 주소)",
-    "imap_host": "mail.hiworks.co.kr",
-    "_imap_fallbacks": "위 주소가 안 되면 순서대로 시도할 후보들",
-    "imap_fallbacks": ["mailapp.hiworks.co.kr", "imap.hiworks.co.kr"],
+    "_protocol": "auto = IMAP 먼저 해보고 안 되면 POP3. imap / pop3 로 고정할 수도 있습니다",
+    "protocol": "auto",
+
+    "_imap": "IMAP 을 여는 곳만 씁니다. Gmail imap.gmail.com / 네이버 imap.naver.com / Office365 outlook.office365.com. 하이웍스는 IMAP 이 없으니 비워둡니다",
+    "imap_host": "",
+    "imap_fallbacks": [],
     "imap_port": 993,
+
+    "_pop3": "하이웍스는 POP3 만 제공합니다 (pop3s.hiworks.com:995, SSL). 하이웍스 [메일>환경설정]에서 POP3 사용을 켜고 '메일 전용 비밀번호'를 따로 만들어야 합니다",
+    "pop3_host": "pop3s.hiworks.com",
+    "pop3_fallbacks": [],
+    "pop3_port": 995,
+
     "folder": "INBOX",
     "body_limit": 1500
   },

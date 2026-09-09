@@ -91,16 +91,23 @@ GEMINI_API_KEY=여기에_받은_키
 
 메일 기능을 쓰려면 `IMAP_USER`, `IMAP_PASS` 도 채웁니다. 안 쓸 거면 비워두세요 — 나머지는 그대로 동작합니다.
 
-메일 서버 주소는 `config.json` 의 `mail.imap_host` 에 있습니다. 회사마다 다릅니다.
+메일 서버 주소는 `config.json` 의 `mail` 에 있습니다. 회사마다 다릅니다.
 
-| 메일 | IMAP 주소 | 포트 |
-|---|---|---|
-| 하이웍스 | `mail.hiworks.co.kr` | 993 (SSL) |
-| Gmail | `imap.gmail.com` | 993 |
-| 네이버 | `imap.naver.com` | 993 |
-| Office365 | `outlook.office365.com` | 993 (기본 인증이 막혀 있으면 안 됩니다) |
+| 메일 | 방식 | 주소 | 포트 |
+|---|---|---|---|
+| 하이웍스 | **POP3만** | `pop3s.hiworks.com` | 995 (SSL) |
+| Gmail | IMAP | `imap.gmail.com` | 993 (앱 비밀번호 필요) |
+| 네이버 | IMAP | `imap.naver.com` | 993 |
+| Office365 | IMAP | `outlook.office365.com` | 993 |
 
-주소를 모르면 `IMAP_USER` / `IMAP_PASS` 만 채우고 `python assistant.py 진단` 을 돌리세요 — 후보 서버를 차례로 시도해보고 되는 주소를 알려줍니다.
+**하이웍스는 IMAP 을 제공하지 않습니다.** POP3 로 붙어야 하고, 쓰기 전에 웹메일에서 두 가지를 해둬야 합니다.
+
+1. `[메일 > 환경설정 > 기본 설정]` 에서 **POP3 사용**을 켭니다.
+2. `[보안 설정]` 에서 **메일 전용 비밀번호**를 따로 만듭니다. 하이웍스 로그인 비밀번호로는 POP3 로그인이 안 됩니다. 이 전용 비밀번호를 `.env` 의 `IMAP_PASS` 에 넣으세요.
+
+POP3 는 폴더도 안읽음 표시도 없어서 받은편지함만 최근 것부터 읽습니다. 나머지는 IMAP 과 똑같이 동작합니다.
+
+주소를 모르겠으면 `IMAP_USER` / `IMAP_PASS` 만 채우고 `python assistant.py 진단` 을 돌리세요 — IMAP·POP3 후보를 차례로 시도해보고 되는 쪽을 알려줍니다.
 
 ### 4. 점검
 
@@ -154,6 +161,8 @@ python assistant.py "오늘 온 메일 정리해줘"
 ## 비서에게 능력을 추가하는 법
 
 여기가 이 시스템의 전부입니다. 두 가지 방법이 있습니다.
+
+> 도구 이름은 **영문**으로 지으세요 (`mail_cleanup` ○ / `메일정리` ✗). Gemini 가 한글 함수 이름을 거절해서, 하나라도 섞이면 대화 전체가 400 오류로 막힙니다. 진단이 잡아내서 알려줍니다.
 
 ### 방법 1 — commands.json 에 명령 등록 (파이썬 몰라도 됨)
 
