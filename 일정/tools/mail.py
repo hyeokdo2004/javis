@@ -13,17 +13,13 @@ import email
 import email.utils
 import imaplib
 import poplib
-import re
 from datetime import datetime, timedelta
 from email.header import decode_header, make_header
 
 from core import context
 from core.config import env
+from core.html_text import html_to_text, tidy
 from core.registry import tool
-
-_TAG = re.compile(r"<[^>]+>")
-_WS = re.compile(r"[ \t\r\f\v]+")
-_NL = re.compile(r"\n{3,}")
 
 # POP3 는 통째로 내려받아 거르므로, 한 번에 훑을 통수를 제한한다
 _POP3_SCAN_LIMIT = 120
@@ -74,17 +70,6 @@ def _decode(value) -> str:
         return str(value)
 
 
-def _html_to_text(html: str) -> str:
-    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
-    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
-    text = re.sub(r"(?i)</(p|div|tr|li|h[1-6])>", "\n", text)
-    text = _TAG.sub(" ", text)
-    for a, b in (("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"),
-                 ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")):
-        text = text.replace(a, b)
-    return text
-
-
 def _body(msg, limit: int) -> str:
     plain, html = "", ""
     parts = msg.walk() if msg.is_multipart() else [msg]
@@ -109,11 +94,7 @@ def _body(msg, limit: int) -> str:
         else:
             html += chunk + "\n"
 
-    text = plain.strip() or _html_to_text(html)
-    text = _NL.sub("\n\n", _WS.sub(" ", text)).strip()
-    if limit and len(text) > limit:
-        text = text[:limit] + "\n…(본문 생략)"
-    return text
+    return tidy(plain.strip() or html_to_text(html), limit)
 
 
 def _attachments(msg) -> list:
