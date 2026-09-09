@@ -1,0 +1,26 @@
+{
+  "_설명": "AI 업무 비서 설정. 이 파일만 고치면 되고 코드는 안 건드려도 됩니다.",
+
+  "timezone_offset_hours": 9,
+
+  "model": {
+    "_id": "Gemini 무료 티어에서 쓸 수 있는 모델. 틀리면 '진단'이 쓸 수 있는 목록을 알려줍니다",
+    "id": "gemini-3.8-flash",
+    "_api_style": "auto = 되는 방식을 자동으로 찾음. interactions(신형) / generate(구형)로 고정 가능",
+    "api_style": "auto"
+  },
+
+  "mail": {
+    "_설명": "메일 기능을 안 쓰면 이 부분은 무시됩니다",
+    "imap_host": "imap.hiworks.com",
+    "imap_port": 993,
+    "folder": "INBOX",
+    "body_limit": 1500
+  },
+
+  "profile": {
+    "name": "사용자",
+    "_notes": "여기에 본인 상황을 적어두면 비서가 훨씬 알아듣습니다. 회사·직무·자주 쓰는 용어·사람 이름 등",
+    "notes": ""
+  }
+}
