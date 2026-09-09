@@ -244,10 +244,30 @@ class Gemini:
 # 변환
 # ────────────────────────────────────────────────────────────
 
+def _sanitize(history: list) -> list:
+    """짝이 맞지 않는 턴을 걸러낸다.
+
+    Gemini 는 도구 호출(model) 턴이 사용자 말이나 도구 결과 바로 뒤에 오기를
+    요구합니다. 대화가 중간에 끊겨 기록이 어긋나면 400 이 나므로 여기서 정리합니다.
+    """
+    turns = list(history)
+    while turns and turns[0].get("role") != "user":
+        turns.pop(0)
+
+    # 도구를 부르기만 하고 결과가 없는 마지막 턴은 버린다
+    while turns:
+        last = turns[-1]
+        if last.get("role") == "assistant" and last.get("calls"):
+            turns.pop()
+            continue
+        break
+    return turns
+
+
 def _to_contents(history: list) -> list:
     """중립 형식 → Gemini contents 배열 (두 방식이 같은 모양을 받아들인다)."""
     out = []
-    for turn in history:
+    for turn in _sanitize(history):
         role = turn.get("role")
 
         if role == "user":

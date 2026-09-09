@@ -168,8 +168,10 @@ def _trim(turns: list, max_turns: int) -> list:
     if len(turns) <= max_turns:
         return turns
     cut = turns[-max_turns:]
-    # 잘린 첫 턴이 도구 결과면 짝이 되는 assistant 턴이 없으므로 더 잘라낸다
-    while cut and cut[0].get("role") == "tool":
+    # 첫 턴은 반드시 사용자 말이어야 한다.
+    # 도구 결과(tool)나 도구 호출(assistant)이 맨 앞에 오면 짝이 끊겨서
+    # "function call turn 은 user 턴 다음에 와야 한다" 는 400 이 난다.
+    while cut and cut[0].get("role") != "user":
         cut = cut[1:]
     return cut
 

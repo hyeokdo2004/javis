@@ -62,9 +62,20 @@ class Agent:
         self.turns.append({"role": "user", "text": user_text})
         specs = registry.specs()
         final = ""
+        repaired = False
 
         for _ in range(MAX_TOOL_ROUNDS):
-            reply = self.llm.chat(self.system_prompt(), self.turns, specs)
+            try:
+                reply = self.llm.chat(self.system_prompt(), self.turns, specs)
+            except LLMError as e:
+                # 지난 대화 기록이 어긋나 있으면(도구 호출/결과 짝이 깨짐)
+                # 이번 질문만 남기고 한 번 다시 해본다
+                if repaired or e.code != 400 or "function call" not in str(e).lower():
+                    raise
+                repaired = True
+                self.turns = [{"role": "user", "text": user_text}]
+                self.memory.clear_history()
+                continue
 
             self.turns.append({
                 "role": "assistant", "text": reply.text, "calls": reply.calls,
