@@ -110,19 +110,28 @@ def check_mail(cfg) -> bool:
     plan = []  # (프로토콜, 주소, 포트)
     protocol = (os.environ.get("MAIL_PROTOCOL") or mail_cfg.get("protocol", "auto")).lower()
 
+    # 남의 회사 메일 서버에 비밀번호를 흘리지 않도록, 설정에 적힌 주소와
+    # 내 도메인에서 유추한 주소만 시도한다.
+    domain = user.split("@")[-1] if "@" in user else ""
+
     if protocol in ("auto", "imap"):
         imap_port = int(os.environ.get("IMAP_PORT") or mail_cfg.get("imap_port", 993))
         for h in _candidates(os.environ.get("IMAP_HOST"), mail_cfg.get("imap_host"),
                              mail_cfg.get("imap_fallbacks"),
-                             ["outlook.office365.com", "imap.gmail.com", "imap.naver.com"]):
+                             ["imap." + domain] if domain else []):
             plan.append(("IMAP", h, imap_port))
 
     if protocol in ("auto", "pop3"):
         pop3_port = int(os.environ.get("POP3_PORT") or mail_cfg.get("pop3_port", 995))
         for h in _candidates(os.environ.get("POP3_HOST"), mail_cfg.get("pop3_host"),
                              mail_cfg.get("pop3_fallbacks"),
-                             ["pop3s.hiworks.com", "pop.gmail.com", "pop.naver.com"]):
+                             ["pop3." + domain] if domain else []):
             plan.append(("POP3", h, pop3_port))
+
+    if not plan:
+        print(NG, "시도할 서버 주소가 없습니다. config.json 의 mail 또는 .env 에 주소를 넣으세요.")
+        _known_hosts()
+        return False
 
     for proto, host, port in plan:
         print(DOT, "시도: {} {}:{}".format(proto, host, port))
@@ -148,7 +157,7 @@ def check_mail(cfg) -> bool:
                 count = len(conn.list()[1])
         except (imaplib.IMAP4.error, poplib.error_proto) as e:
             print("       └ 서버는 열렸는데 로그인 실패: {}".format(e))
-            _hint(str(e))
+            _hint(host, str(e))
             _close(conn)
             continue
 
@@ -160,11 +169,9 @@ def check_mail(cfg) -> bool:
                   .format(proto.lower()))
         return True
 
-    print(NG, "모든 후보 서버에서 실패했습니다.")
-    print(DOT, "하이웍스({}) 라면: 웹메일 로그인 → [메일 > 환경설정 > 기본 설정] 에서 POP3 사용을 켜고,"
-          .format(user.split("@")[-1] if "@" in user else "회사 메일"))
-    print(DOT, "[보안 설정] 에서 '메일 전용 비밀번호' 를 따로 만든 뒤 그 비밀번호를 .env 의 IMAP_PASS 에 넣으세요.")
-    print(DOT, "회사 방화벽이 995/993 포트를 막고 있을 수도 있습니다.")
+    print(NG, "모든 후보 서버에서 실패했습니다. 위의 ★ 안내를 먼저 보세요.")
+    print(DOT, "주소가 아예 다르면 회사 메일 관리자에게 물어보고 config.json 이나 .env 에 넣으세요.")
+    _known_hosts()
     return False
 
 
@@ -178,13 +185,26 @@ def _candidates(*groups) -> list:
     return out
 
 
-def _hint(reason: str) -> None:
+def _hint(host: str, reason: str) -> None:
     low = reason.lower()
     if "basic authentication is disabled" in low:
-        print("         (이 서버는 ID/비밀번호 로그인을 막아둔 곳입니다 — 당신 메일 서버가 아닙니다)")
-    elif "pop3" in low or "auth" in low or "login" in low or "password" in low:
-        print("         (하이웍스는 [메일>환경설정]에서 POP3 사용을 켜고 "
-              "'메일 전용 비밀번호'를 따로 만들어야 합니다)")
+        print("         (이 서버는 ID/비밀번호 로그인을 막아둔 곳입니다)")
+    elif "hiworks" in host and "pop3/smtp settings" in low:
+        print("         ★ 주소는 맞습니다. 계정 쪽 설정만 남았습니다:")
+        print("           1) 하이웍스 웹메일 [메일 > 환경설정 > 기본 설정] 에서 POP3 사용을 켜세요")
+        print("           2) [보안 설정] 에서 '메일 전용 비밀번호' 를 만들어 .env 의 IMAP_PASS 에 넣으세요")
+        print("              (하이웍스 로그인 비밀번호로는 POP3 가 안 됩니다)")
+    else:
+        print("         (아이디·비밀번호가 맞는지, 그 서버에서 POP3/IMAP 사용이 켜져 있는지 확인하세요)")
+
+
+def _known_hosts() -> None:
+    print(DOT, "자주 쓰는 주소 — config.json 의 mail 에 넣으세요")
+    for line in ("하이웍스   POP3 pop3s.hiworks.com:995  (IMAP 없음)",
+                 "Gmail      IMAP imap.gmail.com:993     (앱 비밀번호 필요)",
+                 "네이버      IMAP imap.naver.com:993",
+                 "Office365  IMAP outlook.office365.com:993"):
+        print("       ", line)
 
 
 def _close(conn) -> None:
