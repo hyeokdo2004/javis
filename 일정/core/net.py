@@ -10,7 +10,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-UA = "ai-bisu/1.0 (개인 업무 비서)"
+# HTTP 헤더는 latin-1 로만 보낼 수 있다. 한글을 넣으면 요청 자체가 터진다.
+UA = "ai-bisu/1.0 (personal work assistant)"
 
 
 class NetError(RuntimeError):
@@ -21,10 +22,10 @@ def fetch(url: str, params: dict = None, *, timeout: int = 20,
           max_bytes: int = 2_000_000) -> str:
     if params:
         url = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={
-        "User-Agent": UA,
-        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.5",
-    })
+    headers = {"User-Agent": UA, "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.5"}
+    # 주소에 한글이 남아 있으면 여기서 퍼센트 인코딩해 둔다
+    url = urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
+    req = urllib.request.Request(url, headers=_ascii(headers))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read(max_bytes)
@@ -46,6 +47,18 @@ def fetch(url: str, params: dict = None, *, timeout: int = 20,
         except (UnicodeDecodeError, LookupError):
             continue
     return raw.decode("utf-8", "replace")
+
+
+def _ascii(headers: dict) -> dict:
+    """헤더 값에 latin-1 로 못 보내는 글자가 있으면 떼어낸다."""
+    out = {}
+    for key, value in headers.items():
+        try:
+            value.encode("latin-1")
+        except UnicodeEncodeError:
+            value = value.encode("ascii", "ignore").decode("ascii")
+        out[key] = value
+    return out
 
 
 def fetch_json(url: str, params: dict = None, *, timeout: int = 20) -> dict:
