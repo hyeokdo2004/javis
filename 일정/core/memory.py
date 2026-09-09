@@ -179,8 +179,10 @@ def _encode_history(turns: list) -> list:
     for t in turns:
         item = {"role": t.get("role"), "text": t.get("text", "")}
         if t.get("role") == "assistant" and t.get("calls"):
-            item["calls"] = [{"name": c.name, "args": c.args, "call_id": c.call_id}
-                             for c in t["calls"]]
+            item["calls"] = [{"name": c.name, "args": c.args, "call_id": c.call_id,
+                              "signature": c.signature} for c in t["calls"]]
+        if t.get("role") == "assistant" and t.get("parts"):
+            item["parts"] = t["parts"]
         if t.get("role") == "tool":
             item["name"] = t.get("name", "")
             item["call_id"] = t.get("call_id", "")
@@ -197,7 +199,10 @@ def _decode_history(raw: list) -> list:
         turn = {"role": item.get("role"), "text": item.get("text", "")}
         if item.get("calls"):
             turn["calls"] = [ToolCall(c.get("name", ""), c.get("args") or {},
-                                      c.get("call_id", "")) for c in item["calls"]]
+                                      c.get("call_id", ""), c.get("signature", ""))
+                             for c in item["calls"]]
+        if item.get("parts"):
+            turn["parts"] = item["parts"]
         if turn["role"] == "tool":
             turn["name"] = item.get("name", "")
             turn["call_id"] = item.get("call_id", "")

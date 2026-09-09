@@ -5,9 +5,9 @@
 
   "model": {
     "_id": "Gemini 무료 티어에서 쓸 수 있는 모델. 틀리면 '진단'이 쓸 수 있는 목록을 알려줍니다",
-    "id": "gemini-2.5-flash",
+    "id": "gemini-flash-latest",
     "_fallbacks": "위 모델이 과부하(503)/없음(404)일 때 순서대로 대신 써볼 모델들",
-    "fallbacks": ["gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.0-flash"],
+    "fallbacks": ["gemini-3.6-flash", "gemini-flash-lite-latest"],
     "_api_style": "auto = 되는 방식을 자동으로 찾음. interactions(신형) / generate(구형)로 고정 가능",
     "api_style": "auto"
   },

@@ -68,6 +68,7 @@ class Agent:
 
             self.turns.append({
                 "role": "assistant", "text": reply.text, "calls": reply.calls,
+                "parts": reply.parts,   # 그대로 돌려줘야 하는 원본 (thoughtSignature 포함)
             })
 
             if not reply.calls:

@@ -32,20 +32,24 @@ class LLMError(RuntimeError):
 
 
 class ToolCall:
-    def __init__(self, name: str, args: dict, call_id: str = ""):
+    def __init__(self, name: str, args: dict, call_id: str = "", signature: str = ""):
         self.name = name
         self.args = args or {}
         self.call_id = call_id
+        self.signature = signature  # Gemini 3 의 thoughtSignature
 
     def __repr__(self):
         return "ToolCall({}, {})".format(self.name, self.args)
 
 
 class Reply:
-    def __init__(self, text: str = "", calls=None, raw=None):
+    def __init__(self, text: str = "", calls=None, raw=None, parts=None):
         self.text = text or ""
         self.calls = calls or []
         self.raw = raw
+        # 모델이 준 parts 원본. Gemini 3 부터는 functionCall 에 thoughtSignature 가
+        # 붙어 오고, 다음 요청에 그대로 돌려보내지 않으면 400 이 난다.
+        self.parts = parts or []
 
 
 # ────────────────────────────────────────────────────────────
@@ -90,6 +94,10 @@ def _explain(err: urllib.error.HTTPError) -> str:
         return ("무료 사용량 한도에 걸렸습니다 (429). 잠시 뒤 다시 시도하세요. "
                 "무료 티어는 분당 요청 수와 하루 요청 수에 제한이 있습니다.\n{}").format(msg)
     if err.code == 404:
+        if "no longer available" in msg.lower():
+            return ("이 모델은 이제 신규 사용자에게 제공되지 않습니다 (404): {}\n"
+                    "config.json 의 model.id 를 안내된 모델로 바꾸세요 "
+                    "(gemini-flash-latest 로 두면 항상 최신 flash 를 씁니다).").format(msg)
         return "모델 이름이나 주소를 찾을 수 없습니다 (404): {}".format(msg)
     if 500 <= err.code < 600:
         return ("구글 쪽 일시 오류 ({}) — 그 모델이 지금 몰려서 밀리는 중입니다: {}\n"
@@ -242,11 +250,16 @@ def _to_contents(history: list) -> list:
             out.append({"role": "user", "parts": [{"text": turn.get("text", "")}]})
 
         elif role == "assistant":
-            parts = []
-            if turn.get("text"):
-                parts.append({"text": turn["text"]})
-            for call in turn.get("calls") or []:
-                parts.append({"functionCall": {"name": call.name, "args": call.args}})
+            # 모델이 준 parts 를 그대로 돌려주는 게 가장 안전하다 (thoughtSignature 보존)
+            parts = list(turn.get("parts") or [])
+            if not parts:
+                if turn.get("text"):
+                    parts.append({"text": turn["text"]})
+                for call in turn.get("calls") or []:
+                    part = {"functionCall": {"name": call.name, "args": call.args}}
+                    if call.signature:
+                        part["thoughtSignature"] = call.signature
+                    parts.append(part)
             if parts:
                 out.append({"role": "model", "parts": parts})
 
@@ -270,13 +283,15 @@ def _parse_generate(data: dict) -> Reply:
         raise LLMError("응답이 비어 있습니다.")
 
     texts, calls = [], []
-    for part in (candidates[0].get("content") or {}).get("parts", []):
+    parts = (candidates[0].get("content") or {}).get("parts", []) or []
+    for part in parts:
         if "text" in part and part["text"]:
             texts.append(part["text"])
         fc = part.get("functionCall")
         if fc:
-            calls.append(ToolCall(fc.get("name", ""), fc.get("args") or {}))
-    return Reply("\n".join(texts).strip(), calls, data)
+            calls.append(ToolCall(fc.get("name", ""), fc.get("args") or {},
+                                  signature=part.get("thoughtSignature", "")))
+    return Reply("\n".join(texts).strip(), calls, data, parts)
 
 
 def _parse_interactions(data: dict) -> Reply:
@@ -286,7 +301,8 @@ def _parse_interactions(data: dict) -> Reply:
         kind = step.get("type")
         if kind == "function_call":
             calls.append(ToolCall(step.get("name", ""), step.get("arguments") or {},
-                                  step.get("id", "")))
+                                  step.get("id", ""),
+                                  step.get("thought_signature", "")))
         elif kind in ("model_output", "message", "text"):
             texts.append(_step_text(step))
 
